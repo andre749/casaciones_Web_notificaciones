@@ -45,3 +45,4 @@ database_exports/
 *.dump
 *.sql.gz
 *.tar.gz
+!.env.example

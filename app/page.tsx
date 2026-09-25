@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase-browser";
 import { useAuth } from "@/components/AuthProvider";
+import CampanaNotificaciones from "@/components/CampanaNotificaciones";
 import { LogOut } from "lucide-react"
 const PAYMENTS_ENABLED =
   process.env.NEXT_PUBLIC_ENABLE_PAYMENTS === 'true'
@@ -118,6 +119,7 @@ export default function Home() {
 
 
               {user ? (<>
+                <CampanaNotificaciones userId={user.id} />
                 <button
                   className="cursor-pointer font-medium px-8 py-2 rounded-full transition bg-yellow-400
                 text-black

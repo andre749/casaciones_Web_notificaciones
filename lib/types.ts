@@ -145,3 +145,80 @@ export interface CulqiOrder {
   qr_code?: string
   cip_code?: string
 }
+
+// Tipos para alertas de expedientes (CEJ)
+export type ConsultaEstado =
+  | 'pendiente'
+  | 'consultando'
+  | 'requiere_captcha'
+  | 'ok'
+  | 'no_encontrado'
+  | 'error'
+
+export interface FichaExpediente {
+  codigo: string
+  distritoJudicial: string
+  organo: string
+  parte: string | null
+  estadoProcesal: string
+  ultimaActuacion: string | null
+  especialidad: string
+  juez: string
+  materia: string
+  ficha: Record<string, string>
+  partes: string[][]
+  actuaciones?: ActuacionResumen[]
+}
+
+export interface ActuacionResumen {
+  fecha: string | null
+  resolucion: string
+  acto: string
+  sumilla: string
+}
+
+export interface AlertaExpediente {
+  id: string
+  perfil_id: string
+  tipo: 'expediente' | 'palabra_clave'
+  valor: string
+  parte: string | null
+  filtros: Record<string, string> | null
+  detalle: string | null
+  estado: 'activo' | 'pausado' | 'encontrado'
+  ficha: FichaExpediente | null
+  ultima_actuacion: string | null
+  ultimo_error: string | null
+  consulta_estado: ConsultaEstado
+  consulta_solicitada: string
+  prioridad: number
+  fecha_registro: string
+  ultima_revision: string
+}
+
+export interface NotificacionExpediente {
+  id: string
+  perfil_id: string
+  alerta_id: string
+  titulo: string
+  mensaje: string
+  fecha_hora: string
+  leida: boolean
+  expediente: string | null
+  url_documento: string | null
+  documento_path: string | null
+  created_at: string
+}
+
+export interface IdentidadResumen {
+  tipo_documento: 'DNI' | 'CE'
+  documento_mascara: string
+  updated_at: string
+}
+
+export interface WorkerEstado {
+  id: string
+  estado: 'activo' | 'verificacion_navegador'
+  mensaje: string | null
+  actualizado: string
+}
