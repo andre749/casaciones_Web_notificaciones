@@ -65,6 +65,11 @@ export default function PoliticaPrivacidadPage() {
                 <li>Información técnica del dispositivo y navegador.</li>
                 <li>Dirección IP.</li>
                 <li>Información proporcionada en consultas o reclamos.</li>
+                <li>
+                  Datos de tu documento de identidad (tipo y número, código de
+                  verificación, fecha de emisión y fecha de nacimiento), solo si
+                  activas el monitoreo de expedientes.
+                </li>
               </ul>
             </section>
 
@@ -87,6 +92,11 @@ export default function PoliticaPrivacidadPage() {
                 <li>Mejorar el funcionamiento del servicio.</li>
                 <li>Cumplir obligaciones legales.</li>
                 <li>Enviar comunicaciones relacionadas con el servicio.</li>
+                <li>
+                  Consultar los expedientes que registres en la Consulta de
+                  Expedientes Judiciales del Poder Judicial y avisarte de sus
+                  novedades.
+                </li>
               </ul>
             </section>
 
@@ -143,9 +153,50 @@ export default function PoliticaPrivacidadPage() {
               </p>
             </section>
 
+            <section id="datos-identidad" className="scroll-mt-24">
+              <h2 className="mb-3 text-xl font-bold text-slate-900">
+                7. Datos de identidad para el monitoreo de expedientes
+              </h2>
+
+              <p>
+                La Consulta de Expedientes Judiciales (CEJ) del Poder Judicial
+                exige validar la identidad de quien consulta. Para monitorear tus
+                expedientes sin que tengas que hacerlo en cada consulta, y solo
+                con tu autorización expresa, guardamos los datos de tu documento
+                de identidad que el CEJ solicita.
+              </p>
+
+              <ul className="mt-3 list-disc space-y-2 pl-6">
+                <li>
+                  <strong>Finalidad única:</strong> completar la validación de
+                  identidad del CEJ al consultar los expedientes que tú
+                  registres. No se usan para ningún otro fin ni se comparten con
+                  terceros distintos del Poder Judicial.
+                </li>
+                <li>
+                  <strong>Protección:</strong> se almacenan cifrados (AES-256) y
+                  solo el sistema que realiza las consultas puede descifrarlos.
+                  En la plataforma únicamente se muestran los últimos cuatro
+                  dígitos del documento.
+                </li>
+                <li>
+                  <strong>Conservación:</strong> mientras mantengas el monitoreo
+                  activo. Puedes eliminarlos en cualquier momento desde
+                  &quot;Monitoreo de expedientes&quot; &gt; &quot;Identidad&quot; &gt;
+                  &quot;Eliminar mis datos&quot;; también se eliminan al eliminar tu
+                  cuenta.
+                </li>
+                <li>
+                  <strong>Documentos:</strong> las resoluciones descargadas del
+                  CEJ para tus notificaciones se guardan en un almacenamiento
+                  privado al que solo tú tienes acceso.
+                </li>
+              </ul>
+            </section>
+
             <section>
               <h2 className="mb-3 text-xl font-bold text-slate-900">
-                7. Seguridad
+                8. Seguridad
               </h2>
 
               <p>
@@ -162,7 +213,7 @@ export default function PoliticaPrivacidadPage() {
 
             <section>
               <h2 className="mb-3 text-xl font-bold text-slate-900">
-                8. Conservación
+                9. Conservación
               </h2>
 
               <p>
@@ -174,7 +225,7 @@ export default function PoliticaPrivacidadPage() {
 
             <section>
               <h2 className="mb-3 text-xl font-bold text-slate-900">
-                9. Derechos del titular
+                10. Derechos del titular
               </h2>
 
               <p>
@@ -196,7 +247,7 @@ export default function PoliticaPrivacidadPage() {
 
             <section>
               <h2 className="mb-3 text-xl font-bold text-slate-900">
-                10. Cookies
+                11. Cookies
               </h2>
 
               <p>
@@ -213,7 +264,7 @@ export default function PoliticaPrivacidadPage() {
 
             <section>
               <h2 className="mb-3 text-xl font-bold text-slate-900">
-                11. Cambios en esta política
+                12. Cambios en esta política
               </h2>
 
               <p>
@@ -225,7 +276,7 @@ export default function PoliticaPrivacidadPage() {
 
             <section>
               <h2 className="mb-3 text-xl font-bold text-slate-900">
-                12. Contacto
+                13. Contacto
               </h2>
 
               <div className="rounded-xl bg-slate-50 p-5">
