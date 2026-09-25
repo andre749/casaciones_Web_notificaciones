@@ -1,0 +1,34 @@
+{
+  "identidad": {
+    "tipoDocumento": "DNI",
+    "numeroDocumento": "12345678",
+    "codigoVerificacion": "0",
+    "fechaEmision": "2020-01-31",
+    "fechaNacimiento": "1990-05-20"
+  },
+  "alertas": [
+    {
+      "id": "alr_001",
+      "tipo": "expediente",
+      "valor": "00456-2024-0-1801-JR-CI-05",
+      "parte": "PEREZ",
+      "estado": "activo"
+    },
+    {
+      "id": "alr_002",
+      "tipo": "expediente",
+      "valor": "01234-2024",
+      "estado": "activo",
+      "filtros": {
+        "modo": "filtros",
+        "distritoJudicial": "LIMA",
+        "instancia": "JUZGADO ESPECIALIZADO",
+        "especialidad": "CIVIL",
+        "anio": "2024",
+        "nroExpediente": "1234",
+        "parte": "GARCIA"
+      }
+    }
+  ],
+  "notificaciones": []
+}

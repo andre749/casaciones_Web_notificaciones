@@ -1,0 +1,7 @@
+selenium>=4.15
+pillow>=10.0
+pytesseract>=0.3.10
+requests>=2.31
+undetected-chromedriver>=3.5.5
+cryptography>=42
+python-dotenv>=1.0
