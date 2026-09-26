@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/components/AuthProvider";
 import { AppProvider } from "@/context/AppContext";
+import { IdentidadProvider } from "@/context/IdentidadContext";
 import AvisoNovedades from "@/components/AvisoNovedades";
 
 export const metadata: Metadata = {
@@ -18,10 +19,12 @@ export default function RootLayout({
     <html lang="es">
       <body className="antialiased font-sans">
         <AuthProvider>
-          <AppProvider>
-            {children}
-            <AvisoNovedades />
-          </AppProvider>
+          <IdentidadProvider>
+            <AppProvider>
+              {children}
+              <AvisoNovedades />
+            </AppProvider>
+          </IdentidadProvider>
         </AuthProvider>
       </body>
     </html>
