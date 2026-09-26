@@ -18,8 +18,9 @@ function RegistroContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const supabase = createClient()
-  const { user, perfil, setPerfil } = useAuth()
+  const { } = useAuth()
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const redirectTo = searchParams.get('redirect')
 
   // Paso del flujo: datos de la cuenta -> (opcional) elegir paquete de creditos
@@ -76,29 +77,9 @@ function RegistroContent() {
       }
 
       if (data.user) {
-        console.log("3. Insertando perfil");
-
-        const { data: perfil, error: perfilError } = await supabase
-          .from("perfiles")
-          .insert({
-            id: data.user.id,
-            email,
-            nombre,
-            plan_id: "d04d64e3-252e-4f59-bda4-fdf62fb83775",
-            creditos: 30,
-            consultas_usadas: 0,
-          })
-          .select()
-          .single();
-        console.log("4. Resultado insert");
-        console.log("perfil:", perfil);
-        console.log("perfilError:", JSON.stringify(perfilError, null, 2));
-        setPerfil(perfil)
-        if (perfilError) {
-          setError(perfilError.message);
-          setLoading(false);
-          return;
-        }
+        // El perfil debe ser creado mediante un Trigger en Supabase por seguridad.
+        // Si no usas confirmación de correo, también puedes hacerlo aquí, pero dado que 
+        // tienes RLS activo, fallará si el usuario no está aún autenticado completamente (correo no confirmado).
       }
 
       console.log("5. Terminó");
