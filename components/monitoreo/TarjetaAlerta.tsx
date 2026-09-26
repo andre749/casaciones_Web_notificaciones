@@ -32,6 +32,7 @@ export default function TarjetaAlerta({ alerta, servicioDisponible, onRevisar, o
   const pausada = alerta.estado === 'pausado'
   const enCurso = ['pendiente', 'consultando', 'requiere_captcha'].includes(alerta.consulta_estado)
   // El worker reprograma solo las consultas cuyo captcha no pudo leer
+  // eslint-disable-next-line react-hooks/purity
   const reintento = alerta.consulta_estado === 'pendiente' && new Date(alerta.consulta_solicitada).getTime() > Date.now()
   const estado = pausada
     ? { texto: 'Pausado', clase: 'bg-slate-500/20 text-slate-400 border-slate-500/30' }

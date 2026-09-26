@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 interface ItemCompra {
   id: string
@@ -51,33 +51,7 @@ export default function CulqiCheckout({ item: plan, tipo, userEmail, userName, o
   const [metodo, setMetodo] = useState<'tarjeta' | 'yape' | 'pagoefectivo'>('tarjeta')
   const [culqiLoaded, setCulqiLoaded] = useState(false)
 
-  useEffect(() => {
-    const existing = document.getElementById("culqi-sdk");
-
-    if (existing) {
-      inicializarCulqi();
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.id = "culqi-sdk";
-    script.src = "https://checkout.culqi.com/js/v4";
-    script.async = true;
-
-    script.onload = () => {
-      console.log("✅ SDK Culqi cargado");
-      inicializarCulqi();
-    };
-
-    script.onerror = () => {
-      console.error("❌ No se pudo cargar Culqi");
-      onError("No se pudo cargar Culqi");
-    };
-
-    document.body.appendChild(script);
-  }, []);
-
-  const inicializarCulqi = () => {
+  const inicializarCulqi = useCallback(() => {
     if (!window.Culqi) return;
 
     const publicKey = process.env.NEXT_PUBLIC_CULQI_PUBLIC_KEY;
@@ -102,28 +76,46 @@ export default function CulqiCheckout({ item: plan, tipo, userEmail, userName, o
 
     window.culqi = () => {
       if (window.Culqi.token) {
-
-        // Cerrar modal de Culqi
         window.Culqi.close();
-
         onSuccess({
           token: window.Culqi.token.id,
           method: "tarjeta",
         });
-
       } else if (window.Culqi.error) {
-
-        // También cerrar si hubo error
         window.Culqi.close();
-
         onError(window.Culqi.error.user_message);
       }
-
       setLoading(false);
     };
 
     setCulqiLoaded(true);
-  };
+  }, [plan.precio, userEmail, onSuccess, onError]);
+
+  useEffect(() => {
+    const existing = document.getElementById("culqi-sdk");
+
+    if (existing) {
+      inicializarCulqi();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = "culqi-sdk";
+    script.src = "https://checkout.culqi.com/js/v4";
+    script.async = true;
+
+    script.onload = () => {
+      console.log("✅ SDK Culqi cargado");
+      inicializarCulqi();
+    };
+
+    script.onerror = () => {
+      console.error("❌ No se pudo cargar Culqi");
+      onError("No se pudo cargar Culqi");
+    };
+
+    document.body.appendChild(script);
+  }, [inicializarCulqi, onError]);
   const handlePagarTarjeta = () => {
     if (!culqiLoaded || !window.Culqi) {
       onError('Culqi no esta cargado. Intenta nuevamente.')
