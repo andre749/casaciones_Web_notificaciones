@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/components/AuthProvider";
+import AvisoNovedades from "@/components/AvisoNovedades";
 
 export const metadata: Metadata = {
   title: "Casaciones Judiciales del Peru",
@@ -12,12 +13,12 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  console.log("entro a otro path")
   return (
     <html lang="es">
       <body className="antialiased font-sans">
         <AuthProvider>
           {children}
+          <AvisoNovedades />
         </AuthProvider>
       </body>
     </html>

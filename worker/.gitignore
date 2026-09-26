@@ -1,0 +1,6 @@
+.env
+chrome_perfil/
+alertas.json
+__pycache__/
+*.log
+!.env.example

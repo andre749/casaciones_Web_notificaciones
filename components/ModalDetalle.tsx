@@ -31,6 +31,7 @@ export default function ModalDetalle({ casacionId, onCerrar }: ModalDetalleProps
 
   useEffect(() => {
     if (casacionId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       cargarCasacion(casacionId)
     }
   }, [casacionId, cargarCasacion])
