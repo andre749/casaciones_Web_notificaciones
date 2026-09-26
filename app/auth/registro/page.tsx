@@ -76,28 +76,24 @@ function RegistroContent() {
       }
 
       if (data.user) {
-        console.log("3. Insertando perfil");
+        console.log("3. Esperando creación del perfil por trigger...");
+
+        // Esperamos un momento para que el trigger de BD termine de crear el perfil
+        await new Promise(r => setTimeout(r, 1000));
 
         const { data: perfil, error: perfilError } = await supabase
           .from("perfiles")
-          .insert({
-            id: data.user.id,
-            email,
-            nombre,
-            plan_id: "d04d64e3-252e-4f59-bda4-fdf62fb83775",
-            creditos: 30,
-            consultas_usadas: 0,
-          })
           .select()
+          .eq("id", data.user.id)
           .single();
-        console.log("4. Resultado insert");
+
+        console.log("4. Resultado select");
         console.log("perfil:", perfil);
-        console.log("perfilError:", JSON.stringify(perfilError, null, 2));
-        setPerfil(perfil)
-        if (perfilError) {
-          setError(perfilError.message);
-          setLoading(false);
-          return;
+        
+        if (perfil) {
+          setPerfil(perfil);
+        } else if (perfilError) {
+          console.error("Error obteniendo perfil:", perfilError);
         }
       }
 
