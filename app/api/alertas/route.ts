@@ -72,12 +72,22 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 })
       }
       console.error(error)
-      return NextResponse.json({ error: 'No se pudo registrar la alerta' }, { status: 500 })
+      return NextResponse.json({ 
+        error: 'No se pudo registrar la alerta',
+        code: error.code,
+        pgMessage: error.message,
+        details: error.details
+      }, { status: 500 })
     }
 
     return NextResponse.json({ alerta: data })
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })
+    return NextResponse.json({ 
+      error: 'Error interno del servidor',
+      code: error?.code,
+      pgMessage: error?.message,
+      details: error?.details
+    }, { status: 500 })
   }
 }
