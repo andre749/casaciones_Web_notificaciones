@@ -52,7 +52,6 @@ function RegistroContent() {
     setError("");
     setLoading(true);
 
-    console.log("1. Iniciando signup");
 
     try {
 
@@ -66,8 +65,6 @@ function RegistroContent() {
         },
       });
 
-      console.log("2. Signup respondió");
-      console.log({ data, error });
 
       if (error) {
         setError(error.message);
@@ -76,7 +73,6 @@ function RegistroContent() {
       }
 
       if (data.user) {
-        console.log("3. Esperando creación del perfil por trigger...");
 
         // Esperamos un momento para que el trigger de BD termine de crear el perfil
         await new Promise(r => setTimeout(r, 1000));
@@ -87,8 +83,6 @@ function RegistroContent() {
           .eq("id", data.user.id)
           .single();
 
-        console.log("4. Resultado select");
-        console.log("perfil:", perfil);
         
         if (perfil) {
           setPerfil(perfil);
@@ -97,7 +91,6 @@ function RegistroContent() {
         }
       }
 
-      console.log("5. Terminó");
 
       setLoading(false);
 

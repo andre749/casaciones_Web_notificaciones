@@ -71,23 +71,14 @@ export async function POST(request: Request) {
         // trigger validar_alerta_expediente (migracion 004)
         return NextResponse.json({ error: error.message }, { status: 400 })
       }
+      // El detalle queda en los logs de Netlify; al navegador no se le envia el error interno
       console.error(error)
-      return NextResponse.json({ 
-        error: 'No se pudo registrar la alerta',
-        code: error.code,
-        pgMessage: error.message,
-        details: error.details
-      }, { status: 500 })
+      return NextResponse.json({ error: 'No se pudo registrar la alerta' }, { status: 500 })
     }
 
     return NextResponse.json({ alerta: data })
-  } catch (error: any) {
+  } catch (error) {
     console.error(error)
-    return NextResponse.json({ 
-      error: 'Error interno del servidor',
-      code: error?.code,
-      pgMessage: error?.message,
-      details: error?.details
-    }, { status: 500 })
+    return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })
   }
 }
