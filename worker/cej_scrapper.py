@@ -44,6 +44,7 @@ import shutil
 import socket
 import sys
 import time
+import traceback
 import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -53,7 +54,12 @@ from typing import Callable, Optional
 from PIL import Image, ImageFilter, ImageOps
 import pytesseract
 import undetected_chromedriver as uc
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
@@ -474,12 +480,21 @@ class CejScraper:
 
     def _buscar(self, clave: str, requerido: bool = True):
         for by, sel in SELECTORES[clave]:
-            visibles = [e for e in self.driver.find_elements(by, sel) if e.is_displayed()]
+            visibles = [e for e in self.driver.find_elements(by, sel) if self._visible(e)]
             if visibles:
                 return visibles[0]
         if requerido:
             raise NoSuchElementException(f"No se encontro el elemento '{clave}' en {self.driver.current_url}")
         return None
+
+    @staticmethod
+    def _visible(elemento) -> bool:
+        # Si el portal recarga la pagina entre find_elements e is_displayed, el elemento
+        # queda obsoleto (stale): se trata como no visible y la espera sigue.
+        try:
+            return elemento.is_displayed()
+        except StaleElementReferenceException:
+            return False
 
     def _esperar(self, clave: str, timeout: int = 15):
         WebDriverWait(self.driver, timeout).until(lambda d: self._buscar(clave, requerido=False))
@@ -663,6 +678,12 @@ class CejScraper:
 
         def estado(_):
             try:
+                return estado_actual()
+            except StaleElementReferenceException:
+                return False  # la pagina se estaba recargando: volver a mirar
+
+        def estado_actual():
+            try:
                 self.driver.switch_to.alert.accept()
                 return "captcha_invalido"
             except Exception:
@@ -699,8 +720,21 @@ class CejScraper:
         m = PATRON_CUE.match(f.codigoExpediente.strip().upper())
         nro, anio, incidente, distprov, organo, especialidad, instancia = m.groups()
 
-        self._buscar("tab_codigo").click()
-        self._esperar("cod_expediente")
+        # A veces el clic en la pestaña no se registra (pagina aun cargando o un elemento
+        # encima): se reintenta y el ultimo intento se hace por JavaScript
+        for intento in range(3):
+            tab = self._buscar("tab_codigo")
+            if intento < 2:
+                tab.click()
+            else:
+                self.driver.execute_script("arguments[0].click();", tab)
+            try:
+                self._esperar("cod_expediente", timeout=10)
+                break
+            except TimeoutException:
+                if intento == 2:
+                    raise
+                print("[*] La pestaña 'Por codigo' no abrio; se vuelve a intentar", file=sys.stderr)
         self._escribir("cod_expediente", nro.zfill(5))
         self._escribir("cod_anio", anio)
         self._escribir("cod_incidente", incidente)
@@ -727,6 +761,16 @@ class CejScraper:
         self._enviar_con_captcha(img_clave, entrada_clave, "cod_consultar", identidad)
 
     def _abrir_detalle(self, f: FiltrosBusqueda) -> None:
+        # El listado de resultados puede recargarse mientras se lee: se reintenta
+        for intento in range(3):
+            try:
+                return self._abrir_detalle_una_vez(f)
+            except StaleElementReferenceException:
+                if intento == 2:
+                    raise
+                time.sleep(2)
+
+    def _abrir_detalle_una_vez(self, f: FiltrosBusqueda) -> None:
         if "detalle" in self.driver.current_url:
             return
         filas = self.driver.find_elements(*SELECTORES["fila_resultado"][0])
@@ -746,7 +790,7 @@ class CejScraper:
         boton = boton or self._buscar("boton_detalle")
         boton.click()
         WebDriverWait(self.driver, 20).until(lambda d: "detalle" in d.current_url)
-        WebDriverWait(self.driver, 20).until(
+        WebDriverWait(self.driver, 20, ignored_exceptions=(StaleElementReferenceException,)).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".celdaGridN, .celdaGridN2"))
         )
 
@@ -1211,10 +1255,27 @@ def revisar_alerta(almacen, scraper: CejScraper, alerta: dict) -> int:
         # No es un problema de la alerta: vuelve a la cola tal cual y el worker se detiene
         almacen.actualizar_alerta(alerta["id"], {"consultaEstado": "pendiente"})
         raise
-    except Exception as e:  # CejError, datos invalidos o errores de Selenium
-        print(f"[!] {alerta['valor']}: {type(e).__name__}: {e}", file=sys.stderr)
+    except WebDriverException as e:
+        # Fallo del navegador o del portal a mitad de la consulta (pagina recargada,
+        # timeout...): es temporal, se reprograma como un captcha no resuelto
+        reintento = datetime.now(timezone.utc) + timedelta(minutes=REINTENTO_CAPTCHA_MIN)
+        print(f"[!] {alerta['valor']}: {type(e).__name__}; se reintenta a las {reintento:%H:%M} UTC", file=sys.stderr)
+        print(traceback.format_exc(limit=6).split("Stacktrace:")[0], file=sys.stderr)
         almacen.actualizar_alerta(
-            alerta["id"], {**base, "consultaEstado": "error", "error": f"{type(e).__name__}: {e}"[:500]}
+            alerta["id"],
+            {
+                "consultaEstado": "pendiente",
+                "consultaSolicitada": reintento.isoformat(),
+                "error": "El CEJ esta lento en este momento; se reintentara automaticamente.",
+            },
+        )
+        return 0
+    except Exception as e:  # CejError o datos invalidos
+        print(f"[!] {alerta['valor']}: {type(e).__name__}: {e}", file=sys.stderr)
+        print(traceback.format_exc(limit=6), file=sys.stderr)
+        mensaje = str(e).splitlines()[0] if str(e) else type(e).__name__
+        almacen.actualizar_alerta(
+            alerta["id"], {**base, "consultaEstado": "error", "error": f"No se pudo consultar el CEJ: {mensaje}"[:300]}
         )
         return 0
 
@@ -1317,6 +1378,71 @@ def servir(
         time.sleep(espera)
 
 
+def verificar_instalacion() -> bool:
+    """Comando `verificar`: revisa esta PC, el .env y la base de datos sin consultar el CEJ
+    ni mostrar ningun secreto."""
+    ok = True
+
+    def check(nombre: str, bien: bool, detalle: str = "") -> None:
+        nonlocal ok
+        ok &= bien
+        print(f"  [{'OK' if bien else 'FALTA'}] {nombre}{' - ' + detalle if detalle else ''}")
+
+    print("\n== Esta computadora")
+    try:
+        check("Tesseract OCR", True, str(pytesseract.get_tesseract_version()))
+    except Exception:
+        check("Tesseract OCR", False, "instalalo o define TESSERACT_CMD")
+    chrome = version_chrome()
+    check("Google Chrome", chrome is not None, f"version {chrome}" if chrome else "instalalo o define CEJ_CHROME_VERSION")
+    perfil = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.getenv("CEJ_CHROME_PROFILE") or "chrome_perfil")
+    print(f"  [--] Perfil de Chrome: {perfil} ({'ya existe' if os.path.isdir(perfil) else 'se creara al arrancar'})")
+
+    print("\n== worker/.env")
+    for var in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "IDENTIDAD_CLAVE"):
+        valor = os.getenv(var) or (os.getenv("NEXT_PUBLIC_SUPABASE_URL") if var == "SUPABASE_URL" else None)
+        check(var, bool(valor), "definida" if valor else "vacia")
+    try:
+        clave_ok = len(base64.b64decode(os.getenv("IDENTIDAD_CLAVE") or "")) == 32
+    except Exception:
+        clave_ok = False
+    check("IDENTIDAD_CLAVE con formato valido (32 bytes base64)", clave_ok)
+    if not ok:
+        return False
+
+    print("\n== Supabase")
+    try:
+        almacen = AlmacenSupabase()
+        r = almacen.requests.get(f"{almacen.rest}/", headers=almacen.headers, timeout=30)
+        check("Conexion con la service role key", r.status_code == 200, f"HTTP {r.status_code}")
+        rutas = r.json().get("paths", {}) if r.status_code == 200 else {}
+        for tabla in ("alertas_expedientes", "notificaciones", "identidad_consultante", "worker_estado"):
+            check(f"Tabla {tabla}", f"/{tabla}" in rutas)
+        check("Funciones de la migracion 004", "/rpc/solicitar_revision_alerta" in rutas)
+        b = almacen.requests.get(
+            f"{almacen.url}/storage/v1/bucket/{almacen.BUCKET}", headers=almacen.headers, timeout=30
+        )
+        check(f"Bucket {almacen.BUCKET}", b.status_code == 200 and not b.json().get("public"), "privado" if b.ok else f"HTTP {b.status_code}")
+
+        # La clave debe ser la misma de Netlify: se prueba descifrando una identidad real
+        filas = almacen._req("GET", "identidad_consultante", prefer="", params={"select": "perfil_id,datos_cifrados", "limit": "1"})
+        if filas:
+            try:
+                descifrar_identidad(filas[0]["datos_cifrados"], filas[0]["perfil_id"])
+                check("IDENTIDAD_CLAVE igual a la de Netlify", True, "descifra las identidades guardadas")
+            except Exception:
+                check("IDENTIDAD_CLAVE igual a la de Netlify", False, "NO descifra las identidades: revisa que sea identica")
+        else:
+            print("  [--] Aun no hay identidades registradas: no se puede comparar la clave con la de Netlify")
+        pendientes = almacen._req("GET", "alertas_expedientes", prefer="", params={"select": "id", "consulta_estado": "eq.pendiente"})
+        print(f"  [--] Alertas en cola: {len(pendientes or [])}")
+    except Exception as e:
+        check("Supabase", False, f"{type(e).__name__}: {e}"[:200])
+
+    print("\nTodo listo: ejecuta `python cej_scrapper.py servir`" if ok else "\nCorrige lo marcado como FALTA.")
+    return ok
+
+
 def construir_filtros(args) -> FiltrosBusqueda:
     if args.codigo:
         return FiltrosBusqueda(modo="codigo", codigoExpediente=args.codigo, parte=" ".join(args.parte))
@@ -1386,10 +1512,15 @@ def main() -> int:
         "--intentos-ocr", type=int, default=MAX_INTENTOS_OCR, help="Intentos de OCR por consulta antes de reprogramarla"
     )
 
+    sub.add_parser("verificar", help="Revisa esta PC, worker/.env y la base de datos (no consulta el CEJ)")
+
     args = parser.parse_args()
     # La consola de Windows usa cp1252 por defecto; el JSON sale en UTF-8 para quien lo consuma
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+
+    if args.comando == "verificar":
+        return 0 if verificar_instalacion() else 1
 
     # Validar antes de abrir Chrome
     filtros = identidad = almacen = None
