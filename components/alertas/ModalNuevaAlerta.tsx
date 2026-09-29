@@ -86,7 +86,7 @@ export default function ModalNuevaAlerta({ identidad, onClose, onCreada, onSinId
               autoFocus
               value={codigo}
               onChange={(e) => setCodigo(e.target.value.toUpperCase())}
-              placeholder="00570-2026-0-3002-JR-CI-01"
+              placeholder="00000-0000-0-0000-JR-CI-00"
               required
               className={`${inputClass} font-mono`}
             />
@@ -97,7 +97,7 @@ export default function ModalNuevaAlerta({ identidad, onClose, onCreada, onSinId
             <input
               value={parte}
               onChange={(e) => setParte(e.target.value.toUpperCase())}
-              placeholder="QUISPE DE COARITA"
+              placeholder="APELLIDOS O RAZÓN SOCIAL"
               required
               className={inputClass}
             />

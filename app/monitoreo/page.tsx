@@ -200,7 +200,7 @@ export default function MonitoreoPage() {
                 <input
                   value={codigo}
                   onChange={(e) => setCodigo(e.target.value.toUpperCase())}
-                  placeholder="00570-2026-0-3002-JR-CI-01"
+                  placeholder="00000-0000-0-0000-JR-CI-00"
                   required
                   className="mt-1 w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white text-sm font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                 />
@@ -210,7 +210,7 @@ export default function MonitoreoPage() {
                 <input
                   value={parte}
                   onChange={(e) => setParte(e.target.value.toUpperCase())}
-                  placeholder="QUISPE DE COARITA"
+                  placeholder="APELLIDOS O RAZÓN SOCIAL"
                   required
                   className="mt-1 w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                 />

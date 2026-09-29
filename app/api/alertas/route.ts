@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     const m = PATRON_CUE.exec(codigo)
     if (!m) {
       return NextResponse.json(
-        { error: 'Codigo de expediente invalido. Ej: 00570-2026-0-3002-JR-CI-01' },
+        { error: 'Codigo de expediente invalido. Formato: 00000-0000-0-0000-JR-CI-00' },
         { status: 400 }
       )
     }

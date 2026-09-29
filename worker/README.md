@@ -106,7 +106,7 @@ cookies de Radware suelen no valer en otra computadora o red.
 
 ```bash
 # Consulta suelta (imprime la ficha en JSON)
-python cej_scrapper.py consultar --codigo 00570-2026-0-3002-JR-CI-01 --parte QUISPE DE COARITA \
+python cej_scrapper.py consultar --codigo <CODIGO-DE-EXPEDIENTE> --parte <APELLIDOS O RAZON SOCIAL> \
     --doc-numero 12345678 --doc-verificacion 0 --doc-emision 2020-01-31 --doc-nacimiento 1990-05-20
 
 # Una ronda de monitoreo sobre alertas.json (sin Supabase; ver alertas.example.json)
