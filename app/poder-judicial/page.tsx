@@ -762,9 +762,7 @@ export default function ElPeruanoPage() {
           {/* USER MENU */}
           {/* ------------------------------------------------ */}
 
-          {AUTH_REQUIRED && (
-            <UserMenu />
-          )}
+          <UserMenu />
 
         </div>
 
