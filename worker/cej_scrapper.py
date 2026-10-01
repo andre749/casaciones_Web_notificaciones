@@ -42,6 +42,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import time
 import traceback
@@ -53,7 +54,8 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageFilter, ImageOps
 import pytesseract
-import undetected_chromedriver as uc
+import urllib.request
+from selenium import webdriver
 from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
@@ -94,6 +96,17 @@ REINTENTO_CAPTCHA_MIN = 15
 ESPERA_VERIFICACION_WORKER = 30 * 60
 PAUSA_TRAS_VERIFICACION_MIN = 10
 
+# Antes de pedir ayuda a una persona, se intenta pasar la verificacion con
+# radware/pasar_radware.js (Chrome comun + Puppeteer, ver ese archivo). Requiere Node 18+
+# y `npm install` en worker/radware. CEJ_RADWARE_PUPPETEER=0 lo desactiva.
+SCRIPT_RADWARE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radware", "pasar_radware.js")
+ESPERA_RADWARE_PUPPETEER = 150
+# Radware marca las sesiones nuevas abiertas muy seguidas (el hCaptcha pide entonces el
+# desafio de imagenes): tras un bloqueo, Chrome se cierra y se reabre recien despues de
+# esta pausa, hasta REAPERTURAS_RADWARE veces
+PAUSA_REABRIR_RADWARE = 5 * 60
+REAPERTURAS_RADWARE = 2
+
 
 def _configurar_tesseract() -> None:
     ruta = os.getenv("TESSERACT_CMD")
@@ -113,8 +126,8 @@ _configurar_tesseract()
 
 
 def version_chrome() -> Optional[int]:
-    """Version principal de Chrome instalada (CEJ_CHROME_VERSION la fuerza). Con None,
-    undetected_chromedriver intenta detectarla por su cuenta."""
+    """Version principal de Chrome instalada (CEJ_CHROME_VERSION la fuerza), para el
+    comando `verificar`."""
     if os.getenv("CEJ_CHROME_VERSION"):
         return int(os.environ["CEJ_CHROME_VERSION"])
     if sys.platform == "win32":
@@ -416,6 +429,69 @@ def ahora_iso() -> str:
 # ============================================================
 
 
+def ruta_perfil_chrome() -> str:
+    """Perfil persistente de Chrome (CEJ_CHROME_PROFILE, relativo a esta carpeta)."""
+    perfil = os.getenv("CEJ_CHROME_PROFILE") or "chrome_perfil"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), perfil)
+
+
+def ruta_chrome() -> str:
+    """chrome.exe instalado (CEJ_CHROME_EXE lo fuerza)."""
+    candidatas = [
+        os.getenv("CEJ_CHROME_EXE"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        shutil.which("google-chrome") or shutil.which("chrome"),
+    ]
+    ruta = next((c for c in candidatas if c and os.path.exists(c)), None)
+    if not ruta:
+        raise WebDriverException("No se encontro Chrome (definir CEJ_CHROME_EXE)")
+    return ruta
+
+
+def puerto_libre() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def pestanas_chrome(puerto: int) -> Optional[list]:
+    """Pestanas segun el endpoint HTTP de depuracion (no conecta CDP a la pagina)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{puerto}/json/list", timeout=3) as r:
+            return [t for t in json.load(r) if t.get("type") == "page"]
+    except (OSError, ValueError):
+        return None
+
+
+def pasar_radware_con_puppeteer(puerto: int) -> Optional[dict]:
+    """Corre radware/pasar_radware.js sobre el Chrome del worker (puerto de depuracion):
+    espera a que Radware deje pasar y, si muestra el hCaptcha, hace el clic en "Soy
+    humano". Devuelve su resultado ({"resultado": "directo"|"evitado"|"resuelto"|
+    "atrapado"|"error", "hcaptcha": bool, ...}), o None si no esta disponible."""
+    if os.getenv("CEJ_RADWARE_PUPPETEER", "1") == "0":
+        return None
+    node = shutil.which("node")
+    modulos = os.path.join(os.path.dirname(SCRIPT_RADWARE), "node_modules")
+    if not node or not os.path.isdir(modulos):
+        print("[!] Sin Node o sin `npm install` en worker/radware: no se intenta pasar Radware solo", file=sys.stderr)
+        return None
+    try:
+        salida = subprocess.run(
+            [node, SCRIPT_RADWARE, "--puerto", str(puerto), "--timeout", str(ESPERA_RADWARE_PUPPETEER)],
+            capture_output=True,
+            text=True,
+            timeout=ESPERA_RADWARE_PUPPETEER + 60,
+        )
+        resultado = json.loads(salida.stdout.strip().splitlines()[-1])
+    except (subprocess.TimeoutExpired, ValueError, IndexError) as e:
+        resultado = {"resultado": "error", "detalle": f"{type(e).__name__}: {e}"}
+    if resultado.get("resultado") != "directo":
+        print(f"[*] Radware: {json.dumps(resultado)}", file=sys.stderr)
+    return resultado
+
+
 class CejScraper:
     def __init__(
         self,
@@ -436,7 +512,12 @@ class CejScraper:
         # en la ventana, y a quien avisar (el worker lo publica en worker_estado)
         self.espera_verificacion = espera_verificacion
         self.al_pedir_verificacion = al_pedir_verificacion
-        self.driver: Optional[uc.Chrome] = None
+        self.driver: Optional[webdriver.Chrome] = None
+        self.chrome: Optional[subprocess.Popen] = None
+        # Resultado de pasar_radware.js en el ultimo iniciar() (para diagnostico)
+        self.radware: Optional[dict] = None
+        # iniciar() deja el formulario cargado: la primera consulta no lo vuelve a pedir
+        self._formulario_listo = False
 
     ### Ciclo de vida
 
@@ -448,33 +529,69 @@ class CejScraper:
         self.cerrar()
 
     def iniciar(self) -> None:
-        options = uc.ChromeOptions()
-        options.add_argument("--window-size=1366,768") # Resolución estándar
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--lang=es-PE,es;q=0.9")
-        
+        """Abre Chrome como un Chrome comun (perfil persistente + puerto de depuracion) en
+        el formulario del CEJ, deja que Radware lo verifique sin nada conectado
+        (pasar_radware.js) y recien entonces conecta Selenium. Un Chrome lanzado por
+        Selenium/undetected_chromedriver hace que Radware marque la sesion y pida hCaptcha.
+        El perfil (CEJ_CHROME_PROFILE) conserva las cookies de Radware entre ejecuciones."""
+        puerto = puerto_libre()
+        argumentos = [
+            ruta_chrome(),
+            f"--remote-debugging-port={puerto}",
+            f"--user-data-dir={ruta_perfil_chrome()}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-popup-blocking",
+            "--lang=es-PE",
+            "--window-size=1366,768",
+        ]
         if self.headless:
-            options.add_argument("--headless=new")
-            options.add_argument("--window-size=1400,1000")
-            
-        # Perfil persistente SIEMPRE: conserva las cookies de Radware entre ejecuciones.
-        # Sin el, cada ejecucion arranca con un perfil nuevo y el CEJ vuelve a pedir la
-        # verificacion de navegador. Las rutas relativas son relativas a esta carpeta.
-        perfil = os.getenv("CEJ_CHROME_PROFILE") or "chrome_perfil"
-        perfil = os.path.join(os.path.dirname(os.path.abspath(__file__)), perfil)
-        options.add_argument(f"--user-data-dir={perfil}")
-            
-        # Selenium >= 4.6 descarga el chromedriver correcto automaticamente, 
-        # y uc se encarga de parchearlo
-        # El chromedriver debe coincidir con la version de Chrome instalada en ESTA computadora
-        self.driver = uc.Chrome(options=options, version_main=version_chrome())
+            argumentos += ["--headless=new", "--window-size=1400,1000"]
+        self.chrome = subprocess.Popen(argumentos + [URL_BUSQUEDA], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        limite = time.time() + 30
+        while pestanas_chrome(puerto) is None:
+            if self.chrome.poll() is not None or time.time() > limite:
+                self.cerrar()
+                raise WebDriverException("Chrome no abrio (el perfil esta abierto en otra ventana?)")
+            time.sleep(0.5)
+
+        self.radware = pasar_radware_con_puppeteer(puerto)
+        if self.radware is None:  # sin Node: al menos no conectar en plena verificacion
+            limite = time.time() + 30
+            while time.time() < limite:
+                cej = [t for t in pestanas_chrome(puerto) or [] if "cej.pj.gob.pe" in t.get("url", "")]
+                if cej and cej[0].get("title") and "radware" not in cej[0]["title"].lower():
+                    break
+                time.sleep(1.5)
+
+        options = webdriver.ChromeOptions()
+        options.debugger_address = f"127.0.0.1:{puerto}"
+        # Selenium Manager descarga el chromedriver de la version de Chrome instalada
+        self.driver = webdriver.Chrome(options=options)
         self.driver.set_page_load_timeout(60)
         self.driver.set_script_timeout(90)  # descarga de documentos (descargar_documento)
+        self._formulario_listo = True
 
     def cerrar(self) -> None:
+        # Con debugger_address, quit() solo detiene chromedriver: Chrome se cierra en orden
+        # (Browser.close) para que el perfil guarde las cookies de Radware
         if self.driver:
-            self.driver.quit()
+            try:
+                self.driver.execute_cdp_cmd("Browser.close", {})
+            except Exception:
+                pass
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
             self.driver = None
+        if self.chrome:
+            try:
+                self.chrome.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.chrome.kill()
+            self.chrome = None
 
     ### Helpers de Selenium
 
@@ -551,8 +668,9 @@ class CejScraper:
     ### Navegacion
 
     def abrir_formulario(self) -> None:
-        time.sleep(2) # Dar tiempo a que el driver inicie los parches
-        self.driver.get(URL_BUSQUEDA)
+        if not (self._formulario_listo and self.driver.current_url.startswith(URL_BUSQUEDA)):
+            self.driver.get(URL_BUSQUEDA)
+        self._formulario_listo = False
         self._esperar_verificacion_radware()
         self._esperar("captcha_img", timeout=20)
 
@@ -564,7 +682,19 @@ class CejScraper:
         limite = time.time() + self.espera_verificacion
         inicio = time.time()
         avisado = False
+        reaperturas = 0
         while "radware" in (self.driver.title or "").lower():
+            # Sesion marcada: reabrir al instante vuelve a caer en el hCaptcha. Se cierra
+            # Chrome, se deja pasar un rato y se reabre (pasa por Radware sin Selenium)
+            if reaperturas < REAPERTURAS_RADWARE and time.time() - inicio > 15:
+                reaperturas += 1
+                self.cerrar()
+                print(f"[*] Radware bloqueo la sesion: se reabre Chrome en {PAUSA_REABRIR_RADWARE // 60} min", file=sys.stderr)
+                time.sleep(PAUSA_REABRIR_RADWARE)
+                self.iniciar()
+                self._formulario_listo = False
+                inicio = time.time()
+                continue
             if time.time() > limite:
                 raise VerificacionNavegador(
                     "El portal CEJ pide verificar el navegador (Radware). Completa la verificacion "
@@ -1395,7 +1525,10 @@ def verificar_instalacion() -> bool:
         check("Tesseract OCR", False, "instalalo o define TESSERACT_CMD")
     chrome = version_chrome()
     check("Google Chrome", chrome is not None, f"version {chrome}" if chrome else "instalalo o define CEJ_CHROME_VERSION")
-    perfil = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.getenv("CEJ_CHROME_PROFILE") or "chrome_perfil")
+    perfil = ruta_perfil_chrome()
+    node = shutil.which("node")
+    check("Node.js (pasar Radware)", bool(node) and os.path.isdir(os.path.join(os.path.dirname(SCRIPT_RADWARE), "node_modules")),
+          "" if node else "instalar Node 18+ y correr `npm install` en worker/radware")
     print(f"  [--] Perfil de Chrome: {perfil} ({'ya existe' if os.path.isdir(perfil) else 'se creara al arrancar'})")
 
     print("\n== worker/.env")

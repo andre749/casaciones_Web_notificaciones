@@ -1,0 +1,14 @@
+{
+  "name": "cej-radware",
+  "private": true,
+  "description": "Pasa la verificacion de Radware del CEJ con Chrome comun + Puppeteer (ver pasar_radware.js)",
+  "scripts": {
+    "pasar": "node pasar_radware.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "rebrowser-puppeteer-core": "^24.8.1"
+  }
+}

@@ -4,3 +4,4 @@ alertas.json
 __pycache__/
 *.log
 !.env.example
+radware/node_modules/

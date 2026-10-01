@@ -28,6 +28,7 @@ Usuario ──> Pagina (Netlify) ──> Supabase <── Worker (esta carpeta, 
   suele bloquear IPs de centros de datos.
 - Google Chrome actualizado.
 - Python 3.12+.
+- Node.js 18+ (para pasar la verificacion de Radware sin ayuda, ver abajo).
 - Tesseract OCR: https://github.com/UB-Mannheim/tesseract/wiki (instalador de Windows).
   Si no esta en `C:\Program Files\Tesseract-OCR`, define `TESSERACT_CMD` en `.env`.
 
@@ -36,6 +37,7 @@ Usuario ──> Pagina (Netlify) ──> Supabase <── Worker (esta carpeta, 
 ```bash
 git clone <repo> && cd casaciones_Web_notificaciones/worker
 python -m pip install -r requirements.txt
+cd radware && npm install && cd ..
 copy .env.example .env      # y completar los valores
 ```
 
@@ -80,7 +82,23 @@ python cej_scrapper.py servir
 
 Cuando se abra Chrome, si aparece la verificacion, resuelvela en esa ventana. Queda guardada.
 
-Si mas adelante Radware vuelve a pedirla (cookies vencidas, cambio de red o de IP):
+El worker abre Chrome como un Chrome comun (perfil `CEJ_CHROME_PROFILE` + puerto de
+depuracion), deja que Radware lo verifique sin nada conectado y recien entonces conecta
+Selenium. Esa espera la hace `radware/pasar_radware.js` (Puppeteer): si aparece el hCaptcha
+"Soy humano" hace el clic con movimientos de mouse humanos; si hCaptcha pide el desafio de
+imagenes no se intenta resolverlo. Un Chrome lanzado por Selenium/`puppeteer.launch` se
+queda en "Verifying your browser"; uno comun pasa en segundos, incluso con un perfil vacio.
+Se puede probar suelto:
+
+```bash
+node radware/pasar_radware.js --perfil <CEJ_CHROME_PROFILE> --capturas capturas_radware
+```
+
+Radware tambien marca las sesiones nuevas abiertas muy seguidas: entonces el hCaptcha pide
+imagenes aunque el navegador este limpio. Por eso, si queda bloqueado, el worker cierra
+Chrome y lo reabre recien despues de 5 minutos (hasta 2 veces) en vez de insistir.
+
+`CEJ_RADWARE_PUPPETEER=0` desactiva el paso de Puppeteer. Si aun asi no pasa:
 - el worker deja la ventana abierta hasta 30 min esperando que alguien la resuelva
   (en la PC o por escritorio remoto, p. ej. AnyDesk),
 - publica `verificacion_navegador` en la tabla `worker_estado` (visible en Supabase),
