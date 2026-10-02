@@ -90,6 +90,11 @@ MAX_INTENTOS_EXTERNOS = 3  # solo --captcha-manual
 LARGO_CAPTCHA = 4
 # Si el OCR no puede, la consulta se reprograma sola (el usuario nunca ve captchas)
 REINTENTO_CAPTCHA_MIN = 15
+# "Error de conexion" del CEJ: se reintenta hasta este numero de veces seguidas (cada
+# REINTENTO_CAPTCHA_MIN) y luego la alerta pasa a error. Visto el 2026-10-01: el mismo DNI
+# valido bien y minutos despues dio este error en otras alertas, asi que no indica datos malos.
+MAX_ERRORES_TEMPORALES = 4
+MENSAJE_REINTENTO_TEMPORAL = "El CEJ esta lento en este momento; se reintentara automaticamente (intento {n} de {total})."
 
 # Verificacion de navegador de Radware en el worker: cuanto esperar a que alguien la
 # complete en la ventana y, si nadie lo hace, cuanto pausar antes de volver a intentar
@@ -382,6 +387,15 @@ class CaptchaNoResuelto(CejError):
 
 class IdentidadRechazada(CejError):
     """El CEJ no acepto los datos de identidad del consultante."""
+
+
+class PortalNoDisponible(CejError):
+    """El CEJ respondio con un error temporal ("Error de conexion. Intente nuevamente.")
+    en el mismo lugar donde muestra los rechazos de identidad. No es culpa de la alerta."""
+
+
+# Mensajes del modal de validacion que son fallas temporales del portal, no rechazos
+PATRON_ERROR_TEMPORAL = re.compile(r"error de conexi|intente nuevamente|intentelo nuevamente|servicio no disponible", re.I)
 
 
 class VerificacionNavegador(CejError):
@@ -792,7 +806,10 @@ class CejScraper:
             if resultado == "sin_resultados":
                 raise ExpedienteNoEncontrado("El CEJ no devolvió expedientes")
             if resultado.startswith("identidad_invalida"):
-                raise IdentidadRechazada(resultado.split(":", 1)[-1].strip() or "El CEJ rechazo los datos de identidad")
+                mensaje = resultado.split(":", 1)[-1].strip()
+                if PATRON_ERROR_TEMPORAL.search(normalizar(mensaje)):
+                    raise PortalNoDisponible(mensaje)
+                raise IdentidadRechazada(mensaje or "El CEJ rechazo los datos de identidad")
 
             # Si el captcha falla, hay que cerrar el modal (si sigue abierto) y recargar
             try:
@@ -1179,6 +1196,7 @@ class AlmacenSupabase:
             "estado": f["estado"],
             "revisada": f.get("ficha") is not None,
             "actuacionesVistas": f.get("actuaciones_vistas") or [],
+            "error": f.get("ultimo_error"),
         }
 
     def alertas_a_revisar(self) -> list:
@@ -1239,6 +1257,45 @@ class AlmacenSupabase:
             if reclamada:
                 tomadas.append(self._mapear(reclamada[0]))
         return tomadas
+
+    def tomar_companeras(self, alerta: dict) -> list:
+        """Otras alertas en cola del mismo expediente (aunque su reintento sea a futuro),
+        reclamadas igual que en tomar_pendientes. Quien llama decide cuales comparten la
+        consulta y devuelve el resto con liberar()."""
+        filas = self._req(
+            "GET",
+            "alertas_expedientes",
+            prefer="",
+            params={
+                "select": "id",
+                "consulta_estado": "eq.pendiente",
+                "estado": "neq.pausado",
+                "valor": f"eq.{alerta['valor']}",
+                "id": f"neq.{alerta['id']}",
+            },
+        )
+        tomadas = []
+        for f in filas:
+            reclamada = self._req(
+                "PATCH",
+                "alertas_expedientes",
+                prefer="return=representation",
+                params={"id": f"eq.{f['id']}", "consulta_estado": "eq.pendiente"},
+                json={"consulta_estado": "consultando"},
+            )
+            if reclamada:
+                tomadas.append(self._mapear(reclamada[0]))
+        return tomadas
+
+    def liberar(self, alertas: list) -> None:
+        """Devuelve a la cola alertas reclamadas que al final no se consultaron."""
+        for a in alertas:
+            self._req(
+                "PATCH",
+                "alertas_expedientes",
+                params={"id": f"eq.{a['id']}", "consulta_estado": "eq.consultando"},
+                json={"consulta_estado": "pendiente"},
+            )
 
     def liberar_consultando(self) -> None:
         """Si el worker se cerro a mitad de una consulta, la devuelve a la cola."""
@@ -1335,55 +1392,120 @@ def descargar_documentos(almacen, scraper: CejScraper, alerta: dict, notificacio
             print(f"[!] No se pudo guardar el documento de {n['expediente']}: {e}", file=sys.stderr)
 
 
-def revisar_alerta(almacen, scraper: CejScraper, alerta: dict) -> int:
+def _clave_consulta(alerta: dict, identidad: IdentidadConsultante) -> str:
+    """Dos alertas con la misma clave dan exactamente la misma consulta en el CEJ."""
+    return json.dumps([asdict(filtros_desde_alerta(alerta)), asdict(identidad)], sort_keys=True)
+
+
+def agrupar_companeras(almacen, alerta: dict) -> list:
+    """Alertas en cola del mismo expediente, con los mismos filtros y la misma identidad
+    que `alerta` (p. ej. varias cuentas de la misma persona). Se consultan una sola vez:
+    validar el mismo DNI varias veces seguidas hace que el CEJ responda "Error de
+    conexion". Las que no coinciden vuelven a la cola."""
+    if not hasattr(almacen, "tomar_companeras"):
+        return []
+    try:
+        clave = _clave_consulta(alerta, almacen.identidad_de(alerta))
+    except Exception:
+        return []
+    candidatas = almacen.tomar_companeras(alerta)
+    grupo, otras = [], []
+    for c in candidatas:
+        try:
+            igual = _clave_consulta(c, almacen.identidad_de(c)) == clave
+        except Exception:
+            igual = False
+        (grupo if igual else otras).append(c)
+    if otras:
+        almacen.liberar(otras)
+    return grupo
+
+
+def _resultado_error_temporal(alerta: dict, base: dict, e: Exception) -> dict:
+    """Cambios para una alerta tras un "Error de conexion" del CEJ: reintento en
+    REINTENTO_CAPTCHA_MIN, o error tras MAX_ERRORES_TEMPORALES seguidos. El numero de
+    intento viaja en el mensaje que ve el usuario (ultimo_error); una consulta exitosa lo
+    borra y el conteo vuelve a empezar."""
+    previo = re.search(r"intento (\d+) de", alerta.get("error") or "")
+    intento = int(previo.group(1)) + 1 if previo else 1
+    if intento >= MAX_ERRORES_TEMPORALES:
+        print(f"[!] {alerta['valor']}: el CEJ fallo {intento} veces seguidas ({e}); la alerta pasa a error", file=sys.stderr)
+        return {
+            **base,
+            "consultaEstado": "error",
+            "error": "El CEJ no respondio tras varios intentos (\"Error de conexion\"). Vuelve a "
+            "consultar mas tarde; si sigue pasando, revisa los datos de tu DNI.",
+        }
+    reintento = datetime.now(timezone.utc) + timedelta(minutes=REINTENTO_CAPTCHA_MIN)
+    print(
+        f"[*] {alerta['valor']}: error temporal del CEJ ({e}), intento {intento} de {MAX_ERRORES_TEMPORALES}; "
+        f"se reintenta a las {reintento:%H:%M} UTC",
+        file=sys.stderr,
+    )
+    return {
+        "consultaEstado": "pendiente",
+        "consultaSolicitada": reintento.isoformat(),
+        "error": MENSAJE_REINTENTO_TEMPORAL.format(n=intento, total=MAX_ERRORES_TEMPORALES),
+    }
+
+
+def revisar_alerta(almacen, scraper: CejScraper, alerta: dict, companeras: Optional[list] = None) -> int:
     """Consulta una alerta en el CEJ, registra novedades y deja el resultado en la alerta.
     El usuario nunca interviene: si el captcha no sale, la consulta se reprograma sola.
+    `companeras` (ver agrupar_companeras) reciben el mismo resultado sin otra consulta.
     Devuelve el numero de notificaciones creadas."""
+    grupo = [alerta] + list(companeras or [])
     base = {"ultimaRevision": ahora_iso()}
+
+    def a_todas(cambios) -> None:
+        for a in grupo:
+            almacen.actualizar_alerta(a["id"], cambios(a) if callable(cambios) else cambios)
+
     try:
         identidad = almacen.identidad_de(alerta)
     except Exception as e:  # clave incorrecta o datos corruptos
         identidad = None
         print(f"[!] {alerta['valor']}: no se pudo leer la identidad: {e}", file=sys.stderr)
     if not identidad:
-        almacen.actualizar_alerta(
-            alerta["id"], {**base, "consultaEstado": "error", "error": "Falta registrar la identidad del consultante"}
-        )
+        a_todas({**base, "consultaEstado": "error", "error": "Falta registrar la identidad del consultante"})
         return 0
+    if len(grupo) > 1:
+        print(f"[*] {alerta['valor']}: una consulta para {len(grupo)} alertas (misma identidad)", file=sys.stderr)
 
-    almacen.actualizar_alerta(alerta["id"], {"consultaEstado": "consultando"})
+    a_todas({"consultaEstado": "consultando"})
     try:
         expediente = scraper.consultar(filtros_desde_alerta(alerta), identidad)
     except ExpedienteNoEncontrado:
-        almacen.actualizar_alerta(
-            alerta["id"],
+        print(f"[*] {alerta['valor']}: el CEJ no encontro el expediente con esa parte", file=sys.stderr)
+        a_todas(
             {
                 **base,
                 "consultaEstado": "no_encontrado",
                 "error": "El CEJ no encontro el expediente con esa parte. Revisa el codigo y los apellidos.",
-            },
+            }
         )
         return 0
     except CaptchaNoResuelto:
         reintento = datetime.now(timezone.utc) + timedelta(minutes=REINTENTO_CAPTCHA_MIN)
         print(f"[*] {alerta['valor']}: captcha no resuelto, se reintenta a las {reintento:%H:%M} UTC", file=sys.stderr)
-        almacen.actualizar_alerta(
-            alerta["id"],
+        a_todas(
             {
                 "consultaEstado": "pendiente",
                 "consultaSolicitada": reintento.isoformat(),
                 "error": "El CEJ esta lento en este momento; se reintentara automaticamente.",
-            },
+            }
         )
         return 0
+    except PortalNoDisponible as e:
+        a_todas(lambda a: _resultado_error_temporal(a, base, e))
+        return 0
     except IdentidadRechazada as e:
-        almacen.actualizar_alerta(
-            alerta["id"], {**base, "consultaEstado": "error", "error": f"El CEJ rechazo tu identidad: {e}"}
-        )
+        print(f"[!] {alerta['valor']}: el CEJ rechazo la identidad ({e})", file=sys.stderr)
+        a_todas({**base, "consultaEstado": "error", "error": f"El CEJ rechazo tu identidad: {e}"})
         return 0
     except VerificacionNavegador:
         # No es un problema de la alerta: vuelve a la cola tal cual y el worker se detiene
-        almacen.actualizar_alerta(alerta["id"], {"consultaEstado": "pendiente"})
+        a_todas({"consultaEstado": "pendiente"})
         raise
     except WebDriverException as e:
         # Fallo del navegador o del portal a mitad de la consulta (pagina recargada,
@@ -1391,42 +1513,58 @@ def revisar_alerta(almacen, scraper: CejScraper, alerta: dict) -> int:
         reintento = datetime.now(timezone.utc) + timedelta(minutes=REINTENTO_CAPTCHA_MIN)
         print(f"[!] {alerta['valor']}: {type(e).__name__}; se reintenta a las {reintento:%H:%M} UTC", file=sys.stderr)
         print(traceback.format_exc(limit=6).split("Stacktrace:")[0], file=sys.stderr)
-        almacen.actualizar_alerta(
-            alerta["id"],
+        a_todas(
             {
                 "consultaEstado": "pendiente",
                 "consultaSolicitada": reintento.isoformat(),
                 "error": "El CEJ esta lento en este momento; se reintentara automaticamente.",
-            },
+            }
         )
         return 0
     except Exception as e:  # CejError o datos invalidos
         print(f"[!] {alerta['valor']}: {type(e).__name__}: {e}", file=sys.stderr)
         print(traceback.format_exc(limit=6), file=sys.stderr)
         mensaje = str(e).splitlines()[0] if str(e) else type(e).__name__
-        almacen.actualizar_alerta(
-            alerta["id"], {**base, "consultaEstado": "error", "error": f"No se pudo consultar el CEJ: {mensaje}"[:300]}
-        )
+        a_todas({**base, "consultaEstado": "error", "error": f"No se pudo consultar el CEJ: {mensaje}"[:300]})
         return 0
 
-    notificaciones = detectar_novedades(alerta, expediente)
-    descargar_documentos(almacen, scraper, alerta, notificaciones)
-    almacen.agregar_notificaciones(notificaciones, alerta)
+    # Cada alerta tiene sus propias actuaciones vistas, notificaciones y copias de los PDF
+    # (el PDF se baja del CEJ una sola vez)
+    pdfs = {}
+    descargar = scraper.descargar_documento
 
-    cambios = {
-        **base,
-        "consultaEstado": "ok",
-        "ultimaActuacion": expediente.ultimaActuacion,
-        "detalle": " · ".join(filter(None, [expediente.distritoJudicial, expediente.organo, expediente.parte])),
-        "ficha": expediente.ficha_para_guardar(),
-        "actuacionesVistas": [a.huella for a in expediente.actuaciones],
-        "error": None,
-    }
-    if notificaciones:
-        cambios["estado"] = "encontrado"
-    almacen.actualizar_alerta(alerta["id"], cambios)
-    print(f"[+] {expediente.codigo}: {len(notificaciones)} novedad(es)", file=sys.stderr)
-    return len(notificaciones)
+    def descargar_una_vez(url, *args, **kwargs):
+        if url not in pdfs:
+            pdfs[url] = descargar(url, *args, **kwargs)
+        return pdfs[url]
+
+    scraper.descargar_documento = descargar_una_vez
+    total = 0
+    try:
+        for a in grupo:
+            notificaciones = detectar_novedades(a, expediente)
+            descargar_documentos(almacen, scraper, a, notificaciones)
+            almacen.agregar_notificaciones(notificaciones, a)
+            cambios = {
+                **base,
+                "consultaEstado": "ok",
+                "ultimaActuacion": expediente.ultimaActuacion,
+                "detalle": " · ".join(filter(None, [expediente.distritoJudicial, expediente.organo, expediente.parte])),
+                "ficha": expediente.ficha_para_guardar(),
+                "actuacionesVistas": [act.huella for act in expediente.actuaciones],
+                "error": None,
+            }
+            if notificaciones:
+                cambios["estado"] = "encontrado"
+            almacen.actualizar_alerta(a["id"], cambios)
+            total += len(notificaciones)
+    finally:
+        del scraper.descargar_documento  # vuelve al metodo de la clase
+    print(
+        f"[+] {expediente.codigo}: {total} novedad(es)" + (f" en {len(grupo)} alertas" if len(grupo) > 1 else ""),
+        file=sys.stderr,
+    )
+    return total
 
 
 def monitorear(almacen, scraper: CejScraper) -> dict:
@@ -1490,7 +1628,7 @@ def servir(
                         print(f"[*] Consultando {alerta['valor']}", file=sys.stderr)
                         almacen.latido()
                         ultimo_latido = time.time()
-                        revisar_alerta(almacen, scraper, alerta)
+                        revisar_alerta(almacen, scraper, alerta, agrupar_companeras(almacen, alerta))
                         time.sleep(PAUSA_ENTRE_CONSULTAS)
                         pendientes = almacen.tomar_pendientes()
         except KeyboardInterrupt:
