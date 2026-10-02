@@ -218,7 +218,7 @@ export interface IdentidadResumen {
 
 export interface WorkerEstado {
   id: string
-  estado: 'activo' | 'verificacion_navegador'
+  estado: 'activo' | 'verificacion_navegador' | 'cej_no_disponible'
   mensaje: string | null
   actualizado: string
 }

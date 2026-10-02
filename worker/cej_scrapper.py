@@ -90,11 +90,10 @@ MAX_INTENTOS_EXTERNOS = 3  # solo --captcha-manual
 LARGO_CAPTCHA = 4
 # Si el OCR no puede, la consulta se reprograma sola (el usuario nunca ve captchas)
 REINTENTO_CAPTCHA_MIN = 15
-# "Error de conexion" del CEJ: se reintenta hasta este numero de veces seguidas (cada
-# REINTENTO_CAPTCHA_MIN) y luego la alerta pasa a error. Visto el 2026-10-01: el mismo DNI
-# valido bien y minutos despues dio este error en otras alertas, asi que no indica datos malos.
-MAX_ERRORES_TEMPORALES = 4
-MENSAJE_REINTENTO_TEMPORAL = "El CEJ esta lento en este momento; se reintentara automaticamente (intento {n} de {total})."
+# "Error de conexion" del CEJ: el portal esta caido para todos (2026-10-01 fallaba con
+# cualquier DNI, tambien a mano). Las alertas vuelven a la cola sin marcarse con error y
+# el worker se pausa: 15 min, luego 30, luego 60 y sigue cada 60 hasta que vuelva.
+PAUSAS_CEJ_NO_DISPONIBLE_MIN = (15, 30, 60)
 
 # Verificacion de navegador de Radware en el worker: cuanto esperar a que alguien la
 # complete en la ventana y, si nadie lo hace, cuanto pausar antes de volver a intentar
@@ -390,8 +389,9 @@ class IdentidadRechazada(CejError):
 
 
 class PortalNoDisponible(CejError):
-    """El CEJ respondio con un error temporal ("Error de conexion. Intente nuevamente.")
-    en el mismo lugar donde muestra los rechazos de identidad. No es culpa de la alerta."""
+    """El CEJ respondio "Error de conexion. Intente nuevamente." en el mismo lugar donde
+    muestra los rechazos de identidad. Es una caida del portal, no culpa de la alerta: el
+    worker se pausa como con la verificacion de navegador."""
 
 
 # Mensajes del modal de validacion que son fallas temporales del portal, no rechazos
@@ -1421,34 +1421,6 @@ def agrupar_companeras(almacen, alerta: dict) -> list:
     return grupo
 
 
-def _resultado_error_temporal(alerta: dict, base: dict, e: Exception) -> dict:
-    """Cambios para una alerta tras un "Error de conexion" del CEJ: reintento en
-    REINTENTO_CAPTCHA_MIN, o error tras MAX_ERRORES_TEMPORALES seguidos. El numero de
-    intento viaja en el mensaje que ve el usuario (ultimo_error); una consulta exitosa lo
-    borra y el conteo vuelve a empezar."""
-    previo = re.search(r"intento (\d+) de", alerta.get("error") or "")
-    intento = int(previo.group(1)) + 1 if previo else 1
-    if intento >= MAX_ERRORES_TEMPORALES:
-        print(f"[!] {alerta['valor']}: el CEJ fallo {intento} veces seguidas ({e}); la alerta pasa a error", file=sys.stderr)
-        return {
-            **base,
-            "consultaEstado": "error",
-            "error": "El CEJ no respondio tras varios intentos (\"Error de conexion\"). Vuelve a "
-            "consultar mas tarde; si sigue pasando, revisa los datos de tu DNI.",
-        }
-    reintento = datetime.now(timezone.utc) + timedelta(minutes=REINTENTO_CAPTCHA_MIN)
-    print(
-        f"[*] {alerta['valor']}: error temporal del CEJ ({e}), intento {intento} de {MAX_ERRORES_TEMPORALES}; "
-        f"se reintenta a las {reintento:%H:%M} UTC",
-        file=sys.stderr,
-    )
-    return {
-        "consultaEstado": "pendiente",
-        "consultaSolicitada": reintento.isoformat(),
-        "error": MENSAJE_REINTENTO_TEMPORAL.format(n=intento, total=MAX_ERRORES_TEMPORALES),
-    }
-
-
 def revisar_alerta(almacen, scraper: CejScraper, alerta: dict, companeras: Optional[list] = None) -> int:
     """Consulta una alerta en el CEJ, registra novedades y deja el resultado en la alerta.
     El usuario nunca interviene: si el captcha no sale, la consulta se reprograma sola.
@@ -1457,9 +1429,9 @@ def revisar_alerta(almacen, scraper: CejScraper, alerta: dict, companeras: Optio
     grupo = [alerta] + list(companeras or [])
     base = {"ultimaRevision": ahora_iso()}
 
-    def a_todas(cambios) -> None:
+    def a_todas(cambios: dict) -> None:
         for a in grupo:
-            almacen.actualizar_alerta(a["id"], cambios(a) if callable(cambios) else cambios)
+            almacen.actualizar_alerta(a["id"], cambios)
 
     try:
         identidad = almacen.identidad_de(alerta)
@@ -1497,8 +1469,11 @@ def revisar_alerta(almacen, scraper: CejScraper, alerta: dict, companeras: Optio
         )
         return 0
     except PortalNoDisponible as e:
-        a_todas(lambda a: _resultado_error_temporal(a, base, e))
-        return 0
+        # Caida del portal: vuelven a la cola tal cual (sin error para el usuario) y el
+        # worker se pausa (ver servir)
+        print(f"[!] {alerta['valor']}: el CEJ no esta disponible ({e})", file=sys.stderr)
+        a_todas({"consultaEstado": "pendiente", "error": None})
+        raise
     except IdentidadRechazada as e:
         print(f"[!] {alerta['valor']}: el CEJ rechazo la identidad ({e})", file=sys.stderr)
         a_todas({**base, "consultaEstado": "error", "error": f"El CEJ rechazo tu identidad: {e}"})
@@ -1579,7 +1554,7 @@ def monitorear(almacen, scraper: CejScraper) -> dict:
         try:
             resumen["notificaciones"] += revisar_alerta(almacen, scraper, alerta)
             resumen["revisadas"] += 1
-        except VerificacionNavegador:
+        except (VerificacionNavegador, PortalNoDisponible):
             raise
         except Exception as e:  # p. ej. Supabase no responde
             print(f"[!] {alerta['valor']}: {type(e).__name__}: {e}", file=sys.stderr)
@@ -1596,13 +1571,24 @@ def servir(
     - encola las alertas que no se revisan hace `intervalo_horas`,
     - atiende la cola de a una alerta (primero lo pedido por usuarios).
     Chrome solo se abre mientras hay trabajo. Si el CEJ pide verificar el navegador,
-    espera a que alguien la complete en la ventana y, si nadie lo hace, reintenta luego."""
+    espera a que alguien la complete en la ventana y, si nadie lo hace, reintenta luego.
+    Si el CEJ esta caido ("Error de conexion"), se pausa cada vez mas (15/30/60 min)."""
     almacen.liberar_consultando()
     ultimo_latido = ultima_encolada = 0.0
     print(f"[*] Worker CEJ '{almacen.worker_id}' iniciado (revision cada {intervalo_horas} h)", file=sys.stderr)
 
     def pedir_verificacion() -> None:
         almacen.latido("verificacion_navegador", "El CEJ pide verificar el navegador en la ventana de Chrome del worker")
+
+    def avisar_cej_caido(minutos: int) -> None:
+        mensaje = f"El CEJ no esta disponible (Error de conexion); se reintenta en {minutos} min"
+        try:
+            almacen.latido("cej_no_disponible", mensaje)
+        except CejError:
+            # Base sin la migracion 006: el estado mas parecido que la pagina ya conoce
+            almacen.latido("verificacion_navegador", mensaje)
+
+    caidas_seguidas = 0
 
     while True:
         try:
@@ -1629,6 +1615,7 @@ def servir(
                         almacen.latido()
                         ultimo_latido = time.time()
                         revisar_alerta(almacen, scraper, alerta, agrupar_companeras(almacen, alerta))
+                        caidas_seguidas = 0
                         time.sleep(PAUSA_ENTRE_CONSULTAS)
                         pendientes = almacen.tomar_pendientes()
         except KeyboardInterrupt:
@@ -1640,6 +1627,19 @@ def servir(
             except Exception:
                 pass
             time.sleep(PAUSA_TRAS_VERIFICACION_MIN * 60)
+        except PortalNoDisponible:
+            minutos = PAUSAS_CEJ_NO_DISPONIBLE_MIN[min(caidas_seguidas, len(PAUSAS_CEJ_NO_DISPONIBLE_MIN) - 1)]
+            caidas_seguidas += 1
+            print(f"[!] El CEJ no esta disponible; el worker se pausa {minutos} min", file=sys.stderr)
+            # El latido sigue cada minuto: la pagina da por apagado al worker sin latido
+            # en 5 min y mostraria "servicio fuera de linea" en vez de "el CEJ no responde"
+            for restantes in range(minutos, 0, -1):
+                try:
+                    avisar_cej_caido(restantes)
+                except Exception:
+                    pass
+                time.sleep(60)
+            ultimo_latido = 0.0
         except Exception as e:  # sin internet, Chrome cerrado, Supabase caido...
             print(f"[!] Worker: {type(e).__name__}: {e}", file=sys.stderr)
             time.sleep(30)

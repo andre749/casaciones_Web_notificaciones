@@ -7,6 +7,8 @@ interface TarjetaAlertaProps {
   alerta: AlertaExpediente
   /** Hay un worker activo consultando el CEJ (segun worker_estado) */
   servicioDisponible: boolean
+  /** El worker funciona pero el CEJ no responde ("Error de conexion") */
+  cejNoDisponible: boolean
   onRevisar: () => void
   onPausar: () => void
   onEliminar: () => void
@@ -27,7 +29,14 @@ const fecha = (iso: string | null) =>
 
 const hora = (iso: string) => new Date(iso).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
 
-export default function TarjetaAlerta({ alerta, servicioDisponible, onRevisar, onPausar, onEliminar }: TarjetaAlertaProps) {
+export default function TarjetaAlerta({
+  alerta,
+  servicioDisponible,
+  cejNoDisponible,
+  onRevisar,
+  onPausar,
+  onEliminar,
+}: TarjetaAlertaProps) {
   const [generandoPdf, setGenerandoPdf] = useState(false)
   const pausada = alerta.estado === 'pausado'
   const enCurso = ['pendiente', 'consultando', 'requiere_captcha'].includes(alerta.consulta_estado)
@@ -83,8 +92,9 @@ export default function TarjetaAlerta({ alerta, servicioDisponible, onRevisar, o
       )}
       {!pausada && enCurso && !reintento && !servicioDisponible && (
         <p className="mt-4 text-xs text-slate-400 bg-slate-700/30 rounded-lg px-3 py-2">
-          El servicio de consultas esta temporalmente fuera de linea. Tu expediente se consultara apenas vuelva; puedes
-          cerrar esta pagina.
+          {cejNoDisponible
+            ? 'La pagina del Poder Judicial (CEJ) no esta respondiendo en este momento. Tu expediente se consultara apenas vuelva; puedes cerrar esta pagina.'
+            : 'El servicio de consultas esta temporalmente fuera de linea. Tu expediente se consultara apenas vuelva; puedes cerrar esta pagina.'}
         </p>
       )}
       {!pausada && !enCurso && alerta.ultimo_error && (

@@ -55,6 +55,7 @@ export default function PanelMonitoreo({ onTotalChange }: PanelMonitoreoProps) {
   const [alertas, setAlertas] = useState<AlertaExpediente[]>([])
   const [notificaciones, setNotificaciones] = useState<NotificacionExpediente[]>([])
   const [servicioDisponible, setServicioDisponible] = useState(true)
+  const [cejNoDisponible, setCejNoDisponible] = useState(false)
   const [identidad, setIdentidad] = useState<IdentidadResumen | null>(null)
   const [cargando, setCargando] = useState(true)
 
@@ -88,9 +89,11 @@ export default function PanelMonitoreo({ onTotalChange }: PanelMonitoreoProps) {
     setAlertas(lista)
     setNotificaciones((n.data ?? []) as NotificacionExpediente[])
     const limite = Date.now() - LATIDO_VIGENTE_MS
-    setServicioDisponible(
-      ((w.data ?? []) as WorkerEstado[]).some((x) => x.estado === 'activo' && new Date(x.actualizado).getTime() > limite)
-    )
+    const vigentes = ((w.data ?? []) as WorkerEstado[]).filter((x) => new Date(x.actualizado).getTime() > limite)
+    const hayActivo = vigentes.some((x) => x.estado === 'activo')
+    setServicioDisponible(hayActivo)
+    // El worker esta bien, pero el CEJ responde "Error de conexion": no es culpa nuestra
+    setCejNoDisponible(!hayActivo && vigentes.some((x) => x.estado === 'cej_no_disponible'))
     onTotalChange?.(lista.length)
     hayActividad.current = lista.some(
       (x) =>
@@ -321,8 +324,9 @@ export default function PanelMonitoreo({ onTotalChange }: PanelMonitoreoProps) {
       {!servicioDisponible && alertas.some((a) => a.estado !== 'pausado' && enCurso(a) && !esReintento(a)) && (
         <div className="p-3 rounded-xl border border-slate-700/80 bg-[#121c33]/70 text-[11px] text-slate-400 flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
-          El servicio de consultas está temporalmente fuera de línea. Tus expedientes en cola se consultarán apenas
-          vuelva; puedes cerrar esta página.
+          {cejNoDisponible
+            ? 'La página del Poder Judicial (CEJ) no está respondiendo en este momento. Tus expedientes en cola se consultarán apenas vuelva; puedes cerrar esta página.'
+            : 'El servicio de consultas está temporalmente fuera de línea. Tus expedientes en cola se consultarán apenas vuelva; puedes cerrar esta página.'}
         </div>
       )}
 
@@ -527,7 +531,9 @@ export default function PanelMonitoreo({ onTotalChange }: PanelMonitoreoProps) {
                   <span className={`w-1.5 h-1.5 rounded-full ${servicioDisponible ? 'bg-emerald-400' : 'bg-slate-500'}`} />
                   {servicioDisponible
                     ? 'Revisión automática cada 12 h en el CEJ del Poder Judicial'
-                    : 'Servicio de consultas fuera de línea'}
+                    : cejNoDisponible
+                      ? 'El CEJ del Poder Judicial no está respondiendo'
+                      : 'Servicio de consultas fuera de línea'}
                 </span>
               </div>
             </div>
